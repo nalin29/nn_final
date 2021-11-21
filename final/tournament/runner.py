@@ -1,5 +1,9 @@
 import logging
+import os
+import pathlib
+from typing import Collection
 import numpy as np
+from PIL import Image
 from collections import namedtuple
 
 TRACK_NAME = 'icy_soccer_field'
@@ -101,12 +105,57 @@ class MatchException(Exception):
     def __init__(self, score, msg1, msg2):
         self.score, self.msg1, self.msg2 = score, msg1, msg2
 
+# needs to be changed
+class DataCollector(object):
+    tmp_loc = 'tmp'
+
+    def __init__(self, destination=tmp_loc):
+        self.images = list()
+        self.destination = pathlib.Path(destination)
+
+        # Create dirs
+        os.makedirs(f"{destination}/images", exist_ok=False)
+        os.makedirs(f"{destination}/masks", exist_ok=False)
+
+    def save_frame(self, race, frame, n_players=4):
+        for i in range(n_players):
+            image = race.render_data[i].image
+            Image.fromarray(image).save(f"{self.destination}/images/{i}_{frame}.png")
+
+            mask = race.render_data[i].instance == 134217729
+            Image.fromarray(mask).save(f"{self.destination}/masks/{i}_{frame}.png")
+
+# needs to be changed
+""" def update_chart(plt, ax1, ax2, tournament, frame):
+    id_show = 0 if 'id' not in HACK_DICT else HACK_DICT['id']
+    ax1.clear()
+    ax1.imshow(tournament.k.render_data[id_show].image)
+    # Show player prediction
+    if 'predicted' in HACK_DICT:
+        pred = HACK_DICT['predicted']  # w, h [-1, 1]
+        pred_w = HACK_DICT['predicted_width']  # w [0, 1]
+        pred = (
+        (pred[0] + 1) / 2 * tournament.graphics_config.screen_width, (pred[1] + 1) / 2 * tournament.graphics_config.screen_height)
+        circle = plt.Circle(pred, radius=(pred_w / 2) * tournament.graphics_config.screen_width, fill=False)
+        circle2 = plt.Circle(pred, radius=3, fill=True, color='red')
+        ax1.add_patch(circle)
+        ax1.add_patch(circle2)
+
+    # Show predicted mask
+    if ax2 is not None:
+        ax2.clear()
+        ax2.imshow(HACK_DICT['pred_mask'])
+    plt.pause(1e-3)
+
+    # Save fig
+    # plt.savefig(f"tmp/{frame}.png") """
+
 
 class Match:
     """
         Do not create more than one match per process (use ray to create more)
     """
-    def __init__(self, use_graphics=False, logging_level=None):
+    def __init__(self, use_graphics=False, logging_level=None, collection = False, save_dir = None):
         # DO this here so things work out with ray
         import pystk
         self._pystk = pystk
@@ -123,6 +172,8 @@ class Match:
             graphics_config = self._pystk.GraphicsConfig.none()
 
         self._pystk.init(graphics_config)
+        self.collection = collection
+        self.save_dir = save_dir
 
     def __del__(self):
         if hasattr(self, '_pystk') and self._pystk is not None and self._pystk.clean is not None:  # Don't ask why...
@@ -132,6 +183,7 @@ class Match:
         PlayerConfig = self._pystk.PlayerConfig
         controller = PlayerConfig.Controller.AI_CONTROL if is_ai else PlayerConfig.Controller.PLAYER_CONTROL
         return PlayerConfig(controller=controller, team=team_id, kart=kart)
+    
 
     @classmethod
     def _r(cls, f):
@@ -172,6 +224,11 @@ class Match:
             timeout_slack=TIMEOUT_SLACK, timeout_step=TIMEOUT_STEP, initial_ball_location=[0, 0],
             initial_ball_velocity=[0, 0]):
         RaceConfig = self._pystk.RaceConfig
+
+        if self.save_dir is not None:
+            data_collector = DataCollector(self.save_dir)
+        if self.collection is not False:
+            data_collector = DataCollector()
 
         logging.info('Creating teams')
 
@@ -217,9 +274,12 @@ class Match:
             team2_state = [to_native(p) for p in state.players[1::2]]
             soccer_state = to_native(state.soccer)
             team1_images = team2_images = None
+
             if self._use_graphics:
                 team1_images = [np.array(race.render_data[i].image) for i in range(0, len(race.render_data), 2)]
                 team2_images = [np.array(race.render_data[i].image) for i in range(1, len(race.render_data), 2)]
+                if self.collection or not self.save_dir is None:
+                    data_collector.save_frame(race, it, n_players=4)
 
             # Have each team produce actions (in parallel)
             if t1_type == 'image':
@@ -280,6 +340,9 @@ if __name__ == '__main__':
     parser.add_argument('--ball_velocity', default=[0, 0], type=float, nargs=2, help="Initial xy velocity of ball")
     parser.add_argument('team1', help="Python module name or `AI` for AI players.")
     parser.add_argument('team2', help="Python module name or `AI` for AI players.")
+    parser.add_argument('-g', '--graphics', type=bool, default=False)
+    parser.add_argument('-c', '--collection', type=bool, default=False)
+    parser.add_argument('-d', '--save_dir', type=str, default=None)
     args = parser.parse_args()
 
     logging.basicConfig(level=environ.get('LOGLEVEL', 'WARNING').upper())
@@ -298,7 +361,7 @@ if __name__ == '__main__':
             recorder = recorder & utils.StateRecorder(args.record_state)
 
         # Start the match
-        match = Match(use_graphics=team1.agent_type == 'image' or team2.agent_type == 'image')
+        match = Match(use_graphics=team1.agent_type == 'image' or team2.agent_type == 'image' or args.graphics, collection=args.collection, save_dir= args.save_dir)
         try:
             result = match.run(team1, team2, args.num_players, args.num_frames, max_score=args.max_score,
                                initial_ball_location=args.ball_location, initial_ball_velocity=args.ball_velocity,
@@ -334,7 +397,7 @@ if __name__ == '__main__':
                 recorder = remote.RayStateRecorder.remote(args.record_state.replace(ext, f'.{i}{ext}'))
 
             match = remote.RayMatch.remote(logging_level=getattr(logging, environ.get('LOGLEVEL', 'WARNING').upper()),
-                                           use_graphics=team1.agent_type == 'image' or team2.agent_type == 'image')
+                                           use_graphics=team1.agent_type == 'image' or team2.agent_type == 'image' or args.graphics)
             result = match.run.remote(team1, team2, args.num_players, args.num_frames, max_score=args.max_score,
                                       initial_ball_location=args.ball_location,
                                       initial_ball_velocity=args.ball_velocity,
