@@ -1,5 +1,6 @@
 from .runner import TeamRunner, Match, MatchException
 from .grader import Grader, Case
+from . import utils
 import numpy as np
 import os
 
@@ -18,11 +19,10 @@ class FinalGrader(Grader):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.student_model = HockyRunner(self.module.Team())
+        self.match = Match(use_graphics=self.student_model.agent_type == 'image')
 
     def _test(self, agent_name):
-        
         test_model = TeamRunner(agent_name)
-        match = Match(use_graphics=self.student_model.agent_type == 'image' or test_model.agent_type == 'image')
         ball_locations = [
             [0, 1],
             [0, -1],
@@ -34,14 +34,14 @@ class FinalGrader(Grader):
 
         try:
             for bl in ball_locations:
-                result = match.run(self.student_model, test_model, 2, 1200, max_score=3,
+                result = self.match.run(self.student_model, test_model, 2, 1200, max_score=3,
                                    initial_ball_location=bl, initial_ball_velocity=[0, 0],
                                    record_fn=None)
                 scores.append(result[0])
                 results.append(f'{result[0]}:{result[1]}')
 
             for bl in ball_locations:
-                result = match.run(test_model, self.student_model, 2, 1200, max_score=3,
+                result = self.match.run(test_model, self.student_model, 2, 1200, max_score=3,
                                    initial_ball_location=bl, initial_ball_velocity=[0, 0],
                                    record_fn=None)
                 scores.append(result[1])
@@ -54,17 +54,17 @@ class FinalGrader(Grader):
         return sum(scores), results
 
     @Case(score=25)
+    def test_geoffrey(self):
+        """geoffrey agent"""
+        scores, results = self._test('geoffrey_agent')
+        return min(scores / len(results), 1), "{} goals scored in {} games ({})".format(scores, len(results), '  '.join(results))
+
+    @Case(score=25)
     def test_yann(self):
         """yann agent"""
         scores, results = self._test('yann_agent')
         return min(scores / len(results), 1), "{} goals scored in {} games ({})".format(scores, len(results), '  '.join(results))
 
-    @Case(score=25)
-    def test_geoffrey(self):
-        """geoffrey agent"""
-        scores, results = self._test('geoffrey_agent')
-        return min(scores / len(results), 1), "{} goals scored in {} games ({})".format(scores, len(results), '  '.join(results))
-    
     @Case(score=25)
     def test_yoshua(self):
         """yoshua agent"""
