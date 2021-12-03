@@ -4,8 +4,6 @@ from collections import namedtuple
 
 TRACK_NAME = 'icy_soccer_field'
 MAX_FRAMES = 1000
-TIMEOUT_SLACK = 2   # seconds
-TIMEOUT_STEP = 0.1  # seconds
 
 RunnerInfo = namedtuple('RunnerInfo', ['agent_type', 'error', 'total_act_time'])
 
@@ -157,7 +155,7 @@ class Match:
             return ray.get(f)
         return f
 
-    def _check(self, team1, team2, where, n_iter, timeout_slack, timeout_step):
+    def _check(self, team1, team2, where, n_iter, timeout):
         _, error, t1 = self._g(self._r(team1.info)())
         if error:
             raise MatchException([0, 3], 'other team crashed', 'crash during {}: {}'.format(where, error))
@@ -166,21 +164,11 @@ class Match:
         if error:
             raise MatchException([3, 0], 'crash during {}: {}'.format(where, error), 'other team crashed')
 
-        logging.debug('timeout {} <? {} {}'.format(timeout_slack + n_iter * timeout_step, t1, t2))
+        logging.debug('timeout {} <? {} {}'.format(timeout, t1, t2))
+        return t1 < timeout, t2 < timeout
 
-        if max(t1, t2) > timeout_slack + n_iter * timeout_step:
-            if t1 > t2:
-                # Team 2 wins because of a timeout
-                return [0, 3], 'Timeout ({:.4f}/iter > {:.4f}/iter)'.format(t1 / n_iter, timeout_step),\
-                       'other team timed out'
-            else:
-                # Team 1 wins because of a timeout
-                return [3, 0], 'other team timed out',\
-                       'Timeout ({:.4f}/iter > {:.4f}/iter)'.format(t2 / n_iter, timeout_step)
-
-    def run(self, team1, team2, num_player=1, max_frames=MAX_FRAMES, max_score=3, record_fn=None,
-            timeout_slack=TIMEOUT_SLACK, timeout_step=TIMEOUT_STEP, initial_ball_location=[0, 0],
-            initial_ball_velocity=[0, 0]):
+    def run(self, team1, team2, num_player=1, max_frames=MAX_FRAMES, max_score=3, record_fn=None, timeout=1e10,
+            initial_ball_location=[0, 0], initial_ball_velocity=[0, 0], verbose=False):
         RaceConfig = self._pystk.RaceConfig
 
         logging.info('Creating teams')
@@ -189,18 +177,14 @@ class Match:
         t1_cars = self._g(self._r(team1.new_match)(0, num_player)) or ['tux']
         t2_cars = self._g(self._r(team2.new_match)(1, num_player)) or ['tux']
 
-
         t1_type, *_ = self._g(self._r(team1.info)())
         t2_type, *_ = self._g(self._r(team2.info)())
-
 
         if t1_type == 'image' or t2_type == 'image':
             assert self._use_graphics, 'Need to use_graphics for image agents.'
 
-
         # Deal with crashes
-        self._check(team1, team2, 'new_match', 0, timeout_slack, timeout_step)
-
+        t1_can_act, t2_can_act = self._check(team1, team2, 'new_match', 0, timeout)
 
         # Setup the race config
         logging.info('Setting up race')
@@ -213,8 +197,6 @@ class Match:
 
         # Start the match
         logging.info('Starting race')
-
-
         race = self._pystk.Race(race_config)
         race.start()
         race.step()
@@ -238,21 +220,29 @@ class Match:
                 team2_images = [np.array(race.render_data[i].image) for i in range(1, len(race.render_data), 2)]
 
             # Have each team produce actions (in parallel)
-            if t1_type == 'image':
-                team1_actions_delayed = self._r(team1.act)(team1_state, team1_images)
-            else:
-                team1_actions_delayed = self._r(team1.act)(team1_state, team2_state, soccer_state)
+            if t1_can_act:
+                if t1_type == 'image':
+                    team1_actions_delayed = self._r(team1.act)(team1_state, team1_images)
+                else:
+                    team1_actions_delayed = self._r(team1.act)(team1_state, team2_state, soccer_state)
 
-            if t2_type == 'image':
-                team2_actions_delayed = self._r(team2.act)(team2_state, team2_images)
-            else:
-                team2_actions_delayed = self._r(team2.act)(team2_state, team1_state, soccer_state)
+            if t2_can_act:
+                if t2_type == 'image':
+                    team2_actions_delayed = self._r(team2.act)(team2_state, team2_images)
+                else:
+                    team2_actions_delayed = self._r(team2.act)(team2_state, team1_state, soccer_state)
 
             # Wait for the actions to finish
-            team1_actions = self._g(team1_actions_delayed)
-            team2_actions = self._g(team2_actions_delayed)
+            team1_actions = self._g(team1_actions_delayed) if t1_can_act else None
+            team2_actions = self._g(team2_actions_delayed) if t2_can_act else None
 
-            self._check(team1, team2, 'act', it, timeout_slack, timeout_step)
+            new_t1_can_act, new_t2_can_act = self._check(team1, team2, 'act', it, timeout)
+            if not new_t1_can_act and t1_can_act and verbose:
+                print('Team 1 timed out')
+            if not new_t2_can_act and t2_can_act and verbose:
+                print('Team 2 timed out')
+
+            t1_can_act, t2_can_act = new_t1_can_act, new_t2_can_act
 
             # Assemble the actions
             actions = []
@@ -304,7 +294,6 @@ if __name__ == '__main__':
         # Create the teams
         team1 = AIRunner() if args.team1 == 'AI' else TeamRunner(args.team1)
         team2 = AIRunner() if args.team2 == 'AI' else TeamRunner(args.team2)
-
 
         # What should we record?
         recorder = None

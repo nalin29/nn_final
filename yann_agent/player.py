@@ -38,13 +38,13 @@ def extract_features(pstate, soccer_state, opponent_state, team_id):
     # features of score-line 
     goal_line_center = torch.tensor(soccer_state['goal_line'][team_id], dtype=torch.float32)[:, [0, 2]].mean(dim=0)
 
-    kart_to_goal_line = (goal_line_center-puck_center) / torch.norm(goal_line_center-puck_center)
-    kart_to_goal_line_angle = torch.atan2(kart_to_goal_line[1], kart_to_goal_line[0]) 
-    kart_to_goal_line_angle_difference = limit_period((kart_angle - kart_to_goal_line_angle)/np.pi)
+    puck_to_goal_line = (goal_line_center-puck_center) / torch.norm(goal_line_center-puck_center)
+    puck_to_goal_line_angle = torch.atan2(puck_to_goal_line[1], puck_to_goal_line[0]) 
+    kart_to_goal_line_angle_difference = limit_period((kart_angle - puck_to_goal_line_angle)/np.pi)
 
     features = torch.tensor([kart_center[0], kart_center[1], kart_angle, kart_to_puck_angle, opponent_center0[0],
         opponent_center0[1], opponent_center1[0], opponent_center1[1], kart_to_opponent0_angle, kart_to_opponent1_angle, 
-        goal_line_center[0], goal_line_center[1], kart_to_goal_line_angle, kart_to_puck_angle_difference, 
+        goal_line_center[0], goal_line_center[1], puck_to_goal_line_angle, kart_to_puck_angle_difference, 
         kart_to_opponent0_angle_difference, kart_to_opponent1_angle_difference, 
         kart_to_goal_line_angle_difference], dtype=torch.float32)
 
